@@ -1,0 +1,8 @@
+[package]
+name = "posixshm"
+version = "0.0.1"
+authors = ["Peter Jin <peterhaijin@gmail.com>"]
+
+[lib]
+name = "posixshm"
+path = "src/lib.rs"
