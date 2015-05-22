@@ -132,6 +132,7 @@ impl PosixShm {
     let ret = unsafe { fstat(self.fd, &mut st as *mut stat) };
     assert!(ret != -1, "failed to query file stat!");
     let size = st.st_size as usize;
+    self.map(size, 0);
   }
 
   pub fn map(&mut self, size: usize, offset: isize) {
