@@ -13,12 +13,14 @@ use libc::funcs::posix88::unistd::{close};
 use libc::funcs::posix01::unistd::{ftruncate};
 use libc::types::os::arch::posix01::{stat};
 use std::ffi::{CString};
-use std::mem::{uninitialized};
+use std::mem::{size_of, uninitialized};
 use std::ptr;
+use std::slice::{from_raw_parts, from_raw_parts_mut};
 
 pub struct PosixShmMap {
   data: *mut u8,
   size: usize,
+  offset: isize,
 }
 
 impl Drop for PosixShmMap {
@@ -37,6 +39,14 @@ impl PosixShmMap {
     self.data as *mut T
   }
 
+  pub fn as_slice<T>(&self) -> &[T] {
+    unsafe { from_raw_parts(self.data as *const T, self.size / size_of::<T>()) }
+  }
+
+  pub fn as_mut_slice<T>(&mut self) -> &mut [T] {
+    unsafe { from_raw_parts_mut(self.data as *mut T, self.size / size_of::<T>()) }
+  }
+
   pub fn size(&self) -> usize {
     self.size
   }
@@ -45,15 +55,33 @@ impl PosixShmMap {
 pub struct PosixShm {
   name: String,
   fd: c_int,
+  mode: c_int,
+  perm: c_uint,
   prot: c_int,
+  map_: Option<PosixShmMap>,
 }
 
 impl Drop for PosixShm {
   fn drop(&mut self) {
+    if self.map_.is_some() {
+      let map_ = self.map_.take();
+      drop(map_);
+    }
     if self.fd != -1 {
       let ret2 = unsafe { close(self.fd) };
       assert!(ret2 != -1, "failed to close shared memory object!");
     }
+  }
+}
+
+impl Clone for PosixShm {
+  fn clone(&self) -> PosixShm {
+    let mut shm = PosixShm::open_mode(&self.name, self.mode, self.perm, self.prot);
+    if self.map_.is_some() {
+      let &PosixShmMap{size, offset, ..} = self.map_.as_ref().unwrap();
+      shm.map(size, offset);
+    }
+    shm
   }
 }
 
@@ -67,7 +95,10 @@ impl PosixShm {
     PosixShm{
       name: name.to_string(),
       fd: fd,
+      mode: mode,
+      perm: perm,
       prot: prot,
+      map_: None,
     }
   }
 
@@ -96,21 +127,31 @@ impl PosixShm {
     assert!(ret != -1, "failed to resize shared memory object!");
   }
 
-  pub fn map_all(&self) -> PosixShmMap {
+  pub fn map_all(&mut self) {
     let mut st: stat = unsafe { uninitialized() };
     let ret = unsafe { fstat(self.fd, &mut st as *mut stat) };
     assert!(ret != -1, "failed to query file stat!");
     let size = st.st_size as usize;
-    self.map(size, 0)
   }
 
-  pub fn map(&self, size: usize, offset: isize) -> PosixShmMap {
+  pub fn map(&mut self, size: usize, offset: isize) {
     let data = unsafe { mmap(ptr::null_mut(), size as size_t, self.prot, MAP_SHARED, self.fd, offset as off_t) };
     assert!(data != MAP_FAILED, "failed to map memory!");
-    PosixShmMap{
+    let map_ = PosixShmMap{
       data: data as *mut u8,
       size: size,
-    }
+      offset: offset,
+    };
+    // XXX: Presumably this drops the previous map if one already existed.
+    self.map_ = Some(map_);
+  }
+
+  pub fn get_map(&self) -> &PosixShmMap {
+    self.map_.as_ref().unwrap()
+  }
+
+  pub fn get_mut_map(&mut self) -> &mut PosixShmMap {
+    self.map_.as_mut().unwrap()
   }
 
   pub fn unlink(&self) {
